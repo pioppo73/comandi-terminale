@@ -398,6 +398,38 @@
     resetAutoLock();
   }
 
+  // ---------- merge ----------
+  // Unisce due elenchi di comandi per id, tenendo per ciascun id la versione
+  // con updatedAt piu recente. A differenza di uno schema "vince il piu
+  // recente" applicato all'intero archivio, questo evita che le modifiche
+  // fatte su un dispositivo (mai sincronizzato nel frattempo) vengano
+  // cancellate in blocco da un altro dispositivo che sincronizza dopo.
+  function mergeCommandArrays(a, b) {
+    var byId = {};
+    a.concat(b).forEach(function (item) {
+      if (!item || !item.id) return;
+      var existing = byId[item.id];
+      if (!existing || (item.updatedAt || 0) > (existing.updatedAt || 0)) {
+        byId[item.id] = item;
+      }
+    });
+    return Object.keys(byId).map(function (id) {
+      return byId[id];
+    });
+  }
+
+  function sortForCompare(items) {
+    return (items || [])
+      .slice()
+      .sort(function (a, b) {
+        return (a.id || "").localeCompare(b.id || "");
+      });
+  }
+
+  function sameCommands(a, b) {
+    return JSON.stringify(sortForCompare(a)) === JSON.stringify(sortForCompare(b));
+  }
+
   // ---------- sblocco ----------
   function recoverLegacyInto(baseCommands) {
     // Recupera eventuali comandi salvati con la versione precedente (non cifrata),
@@ -458,32 +490,38 @@
     state.error = null;
     var localEnv = loadLocalEnvelope();
     fetchRemoteEnvelope().then(function (remoteEnv) {
-      var candidates = [];
-      if (localEnv) candidates.push({ source: "local", env: localEnv });
-      if (remoteEnv) candidates.push({ source: "remote", env: remoteEnv });
+      var tasks = [];
+      if (localEnv) {
+        tasks.push(
+          decryptPayload(pw, localEnv).then(function (items) {
+            return { source: "local", items: Array.isArray(items) ? items : [] };
+          })
+        );
+      }
+      if (remoteEnv) {
+        tasks.push(
+          decryptPayload(pw, remoteEnv).then(function (items) {
+            return { source: "remote", items: Array.isArray(items) ? items : [] };
+          })
+        );
+      }
 
-      if (candidates.length === 0) {
+      if (tasks.length === 0) {
         finishUnlock(pw, [], true);
         return;
       }
 
-      candidates.sort(function (a, b) {
-        return (b.env.updatedAt || 0) - (a.env.updatedAt || 0);
-      });
-      var winner = candidates[0];
+      Promise.all(tasks)
+        .then(function (results) {
+          var merged = [];
+          var remoteItems = null;
+          results.forEach(function (r) {
+            merged = mergeCommandArrays(merged, r.items);
+            if (r.source === "remote") remoteItems = r.items;
+          });
 
-      decryptPayload(pw, winner.env)
-        .then(function (decrypted) {
-          var baseCommands = Array.isArray(decrypted) ? decrypted : [];
-          var needsPush = false;
-
-          if (winner.source === "remote") {
-            localStorage.setItem(VAULT_KEY, JSON.stringify(winner.env));
-          } else if (!remoteEnv || (remoteEnv.updatedAt || 0) < winner.env.updatedAt) {
-            needsPush = !!ghToken();
-          }
-
-          finishUnlock(pw, baseCommands, needsPush);
+          var needsPush = remoteItems === null || !sameCommands(merged, remoteItems);
+          finishUnlock(pw, merged, needsPush);
         })
         .catch(function () {
           state.error = "Password errata.";
@@ -1127,24 +1165,28 @@
         return;
       }
       return decryptPayload(vaultPassword, remoteEnv)
-        .then(function (remoteCommands) {
-          var localEnv = loadLocalEnvelope();
-          var localUpdatedAt = localEnv ? localEnv.updatedAt || 0 : 0;
-          if ((remoteEnv.updatedAt || 0) > localUpdatedAt) {
-            commands = Array.isArray(remoteCommands) ? remoteCommands : [];
-            localStorage.setItem(VAULT_KEY, JSON.stringify(remoteEnv));
-            state.settingsOpen = false;
-            render();
-            showToast("Dati aggiornati dal cloud");
-          } else if (ghToken()) {
-            return persistLocal().then(function (envelope) {
+        .then(function (remoteItems) {
+          remoteItems = Array.isArray(remoteItems) ? remoteItems : [];
+          var merged = mergeCommandArrays(commands, remoteItems);
+          var localChanged = !sameCommands(merged, commands);
+          var remoteStale = !sameCommands(merged, remoteItems);
+
+          commands = merged;
+
+          if (!localChanged && !remoteStale) {
+            showToast("Sei già aggiornato");
+            return;
+          }
+
+          return persistLocal().then(function (envelope) {
+            if (localChanged) render();
+            if (remoteStale && ghToken()) {
               return pushRemoteEnvelope(envelope).then(function (result) {
                 showToast(result.ok ? "Sincronizzato" : "Sincronizzazione non riuscita");
               });
-            });
-          } else {
-            showToast("Sei già aggiornato");
-          }
+            }
+            showToast(localChanged ? "Dati aggiornati dal cloud" : "Sei già aggiornato");
+          });
         })
         .catch(function () {
           showToast("Impossibile decifrare i dati remoti");
