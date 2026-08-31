@@ -399,6 +399,61 @@
   }
 
   // ---------- sblocco ----------
+  function recoverLegacyInto(baseCommands) {
+    // Recupera eventuali comandi salvati con la versione precedente (non cifrata),
+    // che il resto del codice non legge più direttamente: senza questo controllo
+    // resterebbero "nascosti" per sempre dietro al nuovo vault cifrato.
+    var legacy = loadLegacyPlain();
+    var legacyItems = Array.isArray(legacy)
+      ? legacy.filter(function (i) {
+          return i && i.command;
+        })
+      : [];
+    if (legacyItems.length === 0) return { commands: baseCommands, recovered: 0 };
+
+    var existingIds = baseCommands.map(function (i) {
+      return i.id;
+    });
+    var merged = baseCommands.concat(
+      legacyItems.map(function (i) {
+        var idClash = !i.id || existingIds.indexOf(i.id) !== -1;
+        return {
+          id: idClash ? uid() : i.id,
+          name: i.name || "",
+          command: i.command || "",
+          notes: i.notes || "",
+          os: OS_META[i.os] ? i.os : "mac",
+          createdAt: i.createdAt || Date.now(),
+          updatedAt: i.updatedAt || Date.now(),
+        };
+      })
+    );
+    localStorage.removeItem(LEGACY_KEY);
+    return { commands: merged, recovered: legacyItems.length };
+  }
+
+  function finishUnlock(pw, baseCommands, needsPush) {
+    var recovery = recoverLegacyInto(baseCommands);
+    vaultPassword = pw;
+    commands = recovery.commands;
+
+    if (needsPush || recovery.recovered > 0) {
+      persistLocal().then(function (envelope) {
+        if (ghToken()) pushRemoteEnvelope(envelope);
+        enterVault();
+        if (recovery.recovered > 0) {
+          showToast(
+            recovery.recovered === 1
+              ? "Recuperato 1 comando salvato in precedenza"
+              : "Recuperati " + recovery.recovered + " comandi salvati in precedenza"
+          );
+        }
+      });
+    } else {
+      enterVault();
+    }
+  }
+
   function attemptUnlock(pw) {
     state.error = null;
     var localEnv = loadLocalEnvelope();
@@ -408,14 +463,7 @@
       if (remoteEnv) candidates.push({ source: "remote", env: remoteEnv });
 
       if (candidates.length === 0) {
-        var legacy = loadLegacyPlain();
-        vaultPassword = pw;
-        commands = Array.isArray(legacy) ? legacy : [];
-        persistLocal().then(function (envelope) {
-          localStorage.removeItem(LEGACY_KEY);
-          if (ghToken()) pushRemoteEnvelope(envelope);
-          enterVault();
-        });
+        finishUnlock(pw, [], true);
         return;
       }
 
@@ -426,16 +474,16 @@
 
       decryptPayload(pw, winner.env)
         .then(function (decrypted) {
-          vaultPassword = pw;
-          commands = Array.isArray(decrypted) ? decrypted : [];
+          var baseCommands = Array.isArray(decrypted) ? decrypted : [];
+          var needsPush = false;
 
           if (winner.source === "remote") {
             localStorage.setItem(VAULT_KEY, JSON.stringify(winner.env));
           } else if (!remoteEnv || (remoteEnv.updatedAt || 0) < winner.env.updatedAt) {
-            if (ghToken()) pushRemoteEnvelope(winner.env);
+            needsPush = !!ghToken();
           }
 
-          enterVault();
+          finishUnlock(pw, baseCommands, needsPush);
         })
         .catch(function () {
           state.error = "Password errata.";
