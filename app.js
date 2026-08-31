@@ -23,14 +23,68 @@
   var OS_ORDER = ["mac", "windows", "linux"];
 
   function osIconSvg(osKey, size) {
+    var meta = OS_META[osKey];
+    var inner = meta.customInner || meta.svg;
+    var viewBox = meta.customViewBox || "0 0 24 24";
     return (
       '<svg class="os-logo" width="' +
       size +
       '" height="' +
       size +
-      '" viewBox="0 0 24 24" fill="#fff" fill-rule="evenodd" aria-hidden="true">' +
-      OS_META[osKey].svg +
+      '" viewBox="' +
+      viewBox +
+      '" fill="#fff" fill-rule="evenodd" aria-hidden="true">' +
+      inner +
       "</svg>"
+    );
+  }
+
+  // ---------- icone personalizzabili (icons/*.svg) ----------
+  var ICON_FILES = {
+    mac: "icons/apple.svg",
+    windows: "icons/windows.svg",
+    linux: "icons/linux.svg",
+  };
+
+  function withTimeout(promise, ms) {
+    return Promise.race([
+      promise,
+      new Promise(function (resolve) {
+        setTimeout(function () {
+          resolve(null);
+        }, ms);
+      }),
+    ]);
+  }
+
+  function loadIconFile(path) {
+    return fetch(path, { cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("not ok");
+        return res.text();
+      })
+      .then(function (text) {
+        var doc = new DOMParser().parseFromString(text, "image/svg+xml");
+        var svgEl = doc.querySelector("svg");
+        if (!svgEl || doc.querySelector("parsererror")) throw new Error("invalid svg");
+        return { inner: svgEl.innerHTML, viewBox: svgEl.getAttribute("viewBox") || "0 0 24 24" };
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
+  function loadCustomIcons() {
+    var keys = Object.keys(ICON_FILES);
+    return Promise.all(
+      keys.map(function (key) {
+        return withTimeout(loadIconFile(ICON_FILES[key]), 1500).then(function (result) {
+          if (result) {
+            OS_META[key].customInner = result.inner;
+            OS_META[key].customViewBox = result.viewBox;
+          }
+        });
+      })
     );
   }
 
@@ -679,5 +733,5 @@
     return overlay;
   }
 
-  render();
+  loadCustomIcons().then(render);
 })();
