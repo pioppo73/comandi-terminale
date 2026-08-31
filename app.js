@@ -319,6 +319,15 @@
     });
   }
 
+  // Rileva URL http/https in un testo gia' HTML-escaped e li trasforma in
+  // link cliccabili, senza toccare il resto del testo (spazi/tab/a-capo
+  // restano intatti grazie a white-space:pre-wrap nel CSS).
+  function linkifyHtml(escapedText) {
+    return escapedText.replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]}]/g, function (url) {
+      return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>";
+    });
+  }
+
   function showToast(msg) {
     var toast = document.querySelector(".toast");
     if (!toast) {
@@ -926,7 +935,7 @@
       var notesValue = document.createElement("div");
       notesValue.className = "field-value notes";
       var notesSpan = document.createElement("span");
-      notesSpan.textContent = entry.notes;
+      notesSpan.innerHTML = linkifyHtml(escapeHtml(entry.notes));
       notesValue.appendChild(notesSpan);
       notesRow.appendChild(notesValue);
       view.appendChild(notesRow);
@@ -960,7 +969,7 @@
       "<label>Comando</label>" +
       '<textarea name="command" class="mono" rows="3" placeholder="Es. ls -la" required></textarea>' +
       "<label>Note</label>" +
-      '<textarea name="notes" rows="4" placeholder="Note opzionali..."></textarea>' +
+      '<textarea name="notes" class="mono" rows="4" placeholder="Note opzionali... (i link vengono resi cliccabili automaticamente)"></textarea>' +
       '<div class="form-actions">' +
       '<button type="submit" class="primary">Salva</button>' +
       '<button type="button" class="ghost" id="cancel-form">Annulla</button>' +

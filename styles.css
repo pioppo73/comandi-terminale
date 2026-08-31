@@ -499,10 +499,22 @@ button:disabled {
 .field-value.notes {
   white-space: pre-wrap;
   align-items: flex-start;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  tab-size: 4;
+}
+
+.field-value.notes a {
+  color: var(--accent-1);
+  text-decoration: underline;
+}
+
+.field-value.notes a:hover {
+  color: #fff;
 }
 
 .command-value {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
 }
 
 .icon-btn {
