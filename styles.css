@@ -485,7 +485,7 @@ button:disabled {
 
 /* ---------- Entry view ---------- */
 .entry-view {
-  max-width: 680px;
+  width: 100%;
 }
 
 .entry-view-header {
@@ -589,7 +589,7 @@ button:disabled {
 
 /* ---------- Entry form ---------- */
 .entry-form {
-  max-width: 680px;
+  width: 100%;
   display: flex;
   flex-direction: column;
 }
