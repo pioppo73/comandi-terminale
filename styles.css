@@ -570,6 +570,15 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.command-value a {
+  color: var(--accent-1);
+  text-decoration: underline;
+}
+
+.command-value a:hover {
+  color: #fff;
+}
+
 .icon-btn {
   background: transparent;
   border: none;

@@ -484,6 +484,57 @@
     });
   }
 
+  function htmlToPlainText(html) {
+    var div = document.createElement("div");
+    div.innerHTML = html;
+    Array.prototype.forEach.call(div.querySelectorAll("br"), function (br) {
+      br.replaceWith("\n");
+    });
+    Array.prototype.forEach.call(div.querySelectorAll("tr"), function (tr) {
+      tr.appendChild(document.createTextNode("\n"));
+    });
+    Array.prototype.forEach.call(div.querySelectorAll("td, th"), function (cell) {
+      if (cell.nextElementSibling) cell.appendChild(document.createTextNode("\t"));
+    });
+    return div.textContent || "";
+  }
+
+  function plainValueOf(entry, field) {
+    var value = entry[field] || "";
+    return entry[field + "Format"] === "html" ? htmlToPlainText(value) : value;
+  }
+
+  // Helper condivisi tra il campo Comando e il campo Note, entrambi editor
+  // "contenteditable" che accettano incolla ricco (HTML) con link e tabelle.
+  function wireRichPaste(el) {
+    el.addEventListener("paste", function (e) {
+      e.preventDefault();
+      var cd = e.clipboardData || window.clipboardData;
+      var html = cd.getData("text/html");
+      var text = cd.getData("text/plain");
+      var toInsert = html ? sanitizeNotesHtml(html) : renderNotesHtml(text || "");
+      document.execCommand("insertHTML", false, toInsert);
+    });
+  }
+
+  function populateRichEditable(el, value, format) {
+    if (!value) return;
+    if (format === "html") {
+      el.innerHTML = sanitizeNotesHtml(value);
+    } else {
+      el.textContent = value;
+    }
+  }
+
+  function extractRichValue(el) {
+    autoLinkTextNodes(el);
+    var isEmpty = el.textContent.trim() === "";
+    return {
+      value: isEmpty ? "" : sanitizeNotesHtml(el.innerHTML),
+      format: isEmpty ? undefined : "html",
+    };
+  }
+
   function showToast(msg) {
     var toast = document.querySelector(".toast");
     if (!toast) {
@@ -896,8 +947,8 @@
       items = items.filter(function (i) {
         return (
           (i.name || "").toLowerCase().indexOf(q) !== -1 ||
-          (i.command || "").toLowerCase().indexOf(q) !== -1 ||
-          (i.notes || "").toLowerCase().indexOf(q) !== -1
+          plainValueOf(i, "command").toLowerCase().indexOf(q) !== -1 ||
+          plainValueOf(i, "notes").toLowerCase().indexOf(q) !== -1
         );
       });
     }
@@ -957,7 +1008,7 @@
           escapeHtml(entry.name || "(senza nome)") +
           "</div>" +
           '<div class="entry-sub">' +
-          escapeHtml(entry.command || "") +
+          escapeHtml(plainValueOf(entry, "command")) +
           "</div>";
         li.addEventListener("click", function () {
           state.selectedId = entry.id;
@@ -1068,17 +1119,18 @@
     cmdRow.className = "field-row";
     cmdRow.innerHTML = "<label>Comando</label>";
     var cmdValue = document.createElement("div");
-    cmdValue.className = "field-value";
+    cmdValue.className = "field-value notes";
     var cmdSpan = document.createElement("span");
     cmdSpan.className = "command-value";
-    cmdSpan.textContent = entry.command || "";
+    cmdSpan.innerHTML =
+      entry.commandFormat === "html" ? sanitizeNotesHtml(entry.command || "") : renderNotesHtml(entry.command || "");
     cmdValue.appendChild(cmdSpan);
     var copyBtn = document.createElement("button");
     copyBtn.className = "icon-btn";
     copyBtn.title = "Copia";
     copyBtn.textContent = "📋";
     copyBtn.addEventListener("click", function () {
-      copyToClipboard(entry.command || "");
+      copyToClipboard(plainValueOf(entry, "command"));
     });
     cmdValue.appendChild(copyBtn);
     cmdRow.appendChild(cmdValue);
@@ -1124,7 +1176,8 @@
       "<label>Nome</label>" +
       '<input type="text" name="name" placeholder="Es. Elenco file dettagliato" required />' +
       "<label>Comando</label>" +
-      '<textarea name="command" class="mono" rows="3" placeholder="Es. ls -la" required></textarea>' +
+      '<div class="notes-editable mono" id="command-editable" contenteditable="true" ' +
+      'data-placeholder="Es. ls -la (puoi incollare anche piu\' comandi o una tabella: restano leggibili)"></div>' +
       "<label>Note</label>" +
       '<div class="notes-editable mono" id="notes-editable" contenteditable="true" ' +
       'data-placeholder="Note opzionali... Incolla pure testo con link o tabelle: restano attivi. Gli URL scritti a mano diventano cliccabili automaticamente, oppure usa [testo](url) per un\'etichetta personalizzata."></div>' +
@@ -1134,24 +1187,14 @@
       "</div>";
 
     form.querySelector('[name="name"]').value = entry ? entry.name || "" : "";
-    form.querySelector('[name="command"]').value = entry ? entry.command || "" : "";
+
+    var commandEditable = form.querySelector("#command-editable");
+    populateRichEditable(commandEditable, entry ? entry.command : "", entry ? entry.commandFormat : undefined);
+    wireRichPaste(commandEditable);
 
     var notesEditable = form.querySelector("#notes-editable");
-    if (entry && entry.notes) {
-      if (entry.notesFormat === "html") {
-        notesEditable.innerHTML = sanitizeNotesHtml(entry.notes);
-      } else {
-        notesEditable.textContent = entry.notes;
-      }
-    }
-    notesEditable.addEventListener("paste", function (e) {
-      e.preventDefault();
-      var cd = e.clipboardData || window.clipboardData;
-      var html = cd.getData("text/html");
-      var text = cd.getData("text/plain");
-      var toInsert = html ? sanitizeNotesHtml(html) : renderNotesHtml(text || "");
-      document.execCommand("insertHTML", false, toInsert);
-    });
+    populateRichEditable(notesEditable, entry ? entry.notes : "", entry ? entry.notesFormat : undefined);
+    wireRichPaste(notesEditable);
 
     var toggle = form.querySelector("#os-toggle");
     var selectedOs = osValue;
@@ -1177,13 +1220,13 @@
     form.addEventListener("submit", function (e) {
       e.preventDefault();
       var name = form.querySelector('[name="name"]').value.trim();
-      var command = form.querySelector('[name="command"]').value.trim();
+      var commandResult = extractRichValue(commandEditable);
+      var notesResult = extractRichValue(notesEditable);
 
-      autoLinkTextNodes(notesEditable);
-      var notesIsEmpty = notesEditable.textContent.trim() === "";
-      var notes = notesIsEmpty ? "" : sanitizeNotesHtml(notesEditable.innerHTML);
-
-      if (!name || !command) return;
+      if (!name || !commandResult.value) {
+        showToast("Compila nome e comando");
+        return;
+      }
 
       var items = loadData();
       var isEdit = !!entry;
@@ -1194,9 +1237,10 @@
             return {
               id: i.id,
               name: name,
-              command: command,
-              notes: notes,
-              notesFormat: notesIsEmpty ? undefined : "html",
+              command: commandResult.value,
+              commandFormat: commandResult.format,
+              notes: notesResult.value,
+              notesFormat: notesResult.format,
               os: selectedOs,
               createdAt: i.createdAt,
               updatedAt: Date.now(),
@@ -1208,9 +1252,10 @@
         var newEntry = {
           id: uid(),
           name: name,
-          command: command,
-          notes: notes,
-          notesFormat: notesIsEmpty ? undefined : "html",
+          command: commandResult.value,
+          commandFormat: commandResult.format,
+          notes: notesResult.value,
+          notesFormat: notesResult.format,
           os: selectedOs,
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -1259,10 +1304,12 @@
       if (!item.command) continue;
       var os = OS_META[item.os] ? item.os : "mac";
       var notesFormat = item.notesFormat === "html" ? "html" : undefined;
+      var commandFormat = item.commandFormat === "html" ? "html" : undefined;
       out.push({
         id: item.id && typeof item.id === "string" ? item.id : uid(),
         name: item.name || "",
-        command: item.command || "",
+        command: commandFormat === "html" ? sanitizeNotesHtml(item.command || "") : item.command || "",
+        commandFormat: commandFormat,
         notes: notesFormat === "html" ? sanitizeNotesHtml(item.notes || "") : item.notes || "",
         notesFormat: notesFormat,
         os: os,
