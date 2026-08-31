@@ -594,9 +594,16 @@
     var actions = document.createElement("div");
     actions.className = "topbar-actions";
 
+    var syncNowBtn = document.createElement("button");
+    syncNowBtn.className = "ghost";
+    syncNowBtn.textContent = "🔄 Sincronizza";
+    syncNowBtn.addEventListener("click", syncNow);
+    actions.appendChild(syncNowBtn);
+
     var syncBtn = document.createElement("button");
-    syncBtn.className = "ghost";
-    syncBtn.textContent = "Sincronizzazione";
+    syncBtn.className = "back-btn";
+    syncBtn.title = "Impostazioni sincronizzazione";
+    syncBtn.textContent = "⚙️";
     syncBtn.addEventListener("click", function () {
       state.settingsOpen = true;
       render();
@@ -1112,6 +1119,39 @@
   }
 
   // ---------- impostazioni di sincronizzazione ----------
+  function syncNow() {
+    showToast("Sincronizzazione in corso...");
+    return fetchRemoteEnvelope().then(function (remoteEnv) {
+      if (!remoteEnv) {
+        showToast("Nessun dato remoto trovato");
+        return;
+      }
+      return decryptPayload(vaultPassword, remoteEnv)
+        .then(function (remoteCommands) {
+          var localEnv = loadLocalEnvelope();
+          var localUpdatedAt = localEnv ? localEnv.updatedAt || 0 : 0;
+          if ((remoteEnv.updatedAt || 0) > localUpdatedAt) {
+            commands = Array.isArray(remoteCommands) ? remoteCommands : [];
+            localStorage.setItem(VAULT_KEY, JSON.stringify(remoteEnv));
+            state.settingsOpen = false;
+            render();
+            showToast("Dati aggiornati dal cloud");
+          } else if (ghToken()) {
+            return persistLocal().then(function (envelope) {
+              return pushRemoteEnvelope(envelope).then(function (result) {
+                showToast(result.ok ? "Sincronizzato" : "Sincronizzazione non riuscita");
+              });
+            });
+          } else {
+            showToast("Sei già aggiornato");
+          }
+        })
+        .catch(function () {
+          showToast("Impossibile decifrare i dati remoti");
+        });
+    });
+  }
+
   function renderSettingsModal() {
     var overlay = document.createElement("div");
     overlay.className = "modal-overlay";
@@ -1136,7 +1176,6 @@
       (hasToken ? '<button type="button" class="danger" id="remove-token">Rimuovi</button>' : "") +
       "</div>" +
       '<div class="form-actions">' +
-      '<button type="button" class="ghost" id="sync-now">Sincronizza ora</button>' +
       '<button type="button" class="ghost" id="close-settings">Chiudi</button>' +
       "</div>";
 
@@ -1162,39 +1201,6 @@
     modal.querySelector("#close-settings").addEventListener("click", function () {
       state.settingsOpen = false;
       render();
-    });
-
-    modal.querySelector("#sync-now").addEventListener("click", function () {
-      showToast("Sincronizzazione in corso...");
-      fetchRemoteEnvelope().then(function (remoteEnv) {
-        if (!remoteEnv) {
-          showToast("Nessun dato remoto trovato");
-          return;
-        }
-        decryptPayload(vaultPassword, remoteEnv)
-          .then(function (remoteCommands) {
-            var localEnv = loadLocalEnvelope();
-            var localUpdatedAt = localEnv ? localEnv.updatedAt || 0 : 0;
-            if ((remoteEnv.updatedAt || 0) > localUpdatedAt) {
-              commands = Array.isArray(remoteCommands) ? remoteCommands : [];
-              localStorage.setItem(VAULT_KEY, JSON.stringify(remoteEnv));
-              state.settingsOpen = false;
-              render();
-              showToast("Dati aggiornati dal cloud");
-            } else if (ghToken()) {
-              persistLocal().then(function (envelope) {
-                pushRemoteEnvelope(envelope).then(function (result) {
-                  showToast(result.ok ? "Sincronizzato" : "Sincronizzazione non riuscita");
-                });
-              });
-            } else {
-              showToast("Sei già aggiornato");
-            }
-          })
-          .catch(function () {
-            showToast("Impossibile decifrare i dati remoti");
-          });
-      });
     });
 
     overlay.appendChild(modal);
