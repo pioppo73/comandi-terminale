@@ -178,6 +178,9 @@ button:disabled {
 }
 
 .topbar h1 {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
   font-size: 1.05rem;
   margin: 0;
   letter-spacing: 0.02em;
@@ -189,6 +192,12 @@ button:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.os-logo {
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
 }
 
 .topbar-actions {
@@ -386,7 +395,9 @@ button:disabled {
 }
 
 .badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
   background: var(--surface-muted);
   border-radius: 999px;
   padding: 0.15em 0.7em;

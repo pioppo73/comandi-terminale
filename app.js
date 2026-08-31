@@ -4,11 +4,35 @@
   var STORAGE_KEY = "terminal-commands:data";
 
   var OS_META = {
-    mac: { label: "Mac", icon: "🍎" },
-    windows: { label: "Windows", icon: "🪟" },
-    linux: { label: "Linux", icon: "🐧" },
+    mac: {
+      label: "Mac",
+      svg:
+        '<path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.014-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.05-1.6 2.9-1.65.03.13.05.24.05.4zm4.075 16.02c-.058-.06-1.7-.99-1.7-3.14 0-2.5 2.02-3.4 2.11-3.46-.04-.13-.68-1.28-1.63-2.05-.79-.63-1.72-1.03-2.61-1.03-1.08 0-1.65.53-2.51.53-.88 0-1.6-.53-2.5-.53-.98 0-1.9.44-2.7 1.13-1.83 1.58-2.71 4.44-1.9 7.5.6 2.28 2.1 4.66 3.4 4.66.86 0 1.19-.55 2.25-.55 1.05 0 1.34.55 2.28.55 1.34 0 2.72-1.94 3.31-3.63-.85-.35-1.63-1.03-2.13-1.98z"/>',
+    },
+    windows: {
+      label: "Windows",
+      svg:
+        '<rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/>',
+    },
+    linux: {
+      label: "Linux",
+      svg:
+        '<ellipse cx="6.6" cy="14.5" rx="1.35" ry="2.7"/><ellipse cx="17.4" cy="14.5" rx="1.35" ry="2.7"/><path d="M12,3.4 C13.9,3.4 15.2,5.1 15.1,7.3 C15.05,8.3 14.7,8.9 14.3,9.4 C16.6,10.6 18,13.6 17.6,17.4 C17.3,20.2 15.2,21.6 12,21.6 C8.8,21.6 6.7,20.2 6.4,17.4 C6,13.6 7.4,10.6 9.7,9.4 C9.3,8.9 8.95,8.3 8.9,7.3 C8.8,5.1 10.1,3.4 12,3.4 Z M10.6,8.9 a0.95,0.95 0 1,0 0.02,0 Z M13.4,8.9 a0.95,0.95 0 1,0 0.02,0 Z"/>',
+    },
   };
   var OS_ORDER = ["mac", "windows", "linux"];
+
+  function osIconSvg(osKey, size) {
+    return (
+      '<svg class="os-logo" width="' +
+      size +
+      '" height="' +
+      size +
+      '" viewBox="0 0 24 24" fill="#fff" fill-rule="evenodd" aria-hidden="true">' +
+      OS_META[osKey].svg +
+      "</svg>"
+    );
+  }
 
   var state = {
     view: "home", // 'home' | 'section'
@@ -148,10 +172,11 @@
     }
 
     var h1 = document.createElement("h1");
-    h1.textContent =
-      state.view === "section"
-        ? OS_META[state.currentOS].icon + " " + OS_META[state.currentOS].label
-        : "Comandi Terminale";
+    if (state.view === "section") {
+      h1.innerHTML = osIconSvg(state.currentOS, 18) + "<span>" + OS_META[state.currentOS].label + "</span>";
+    } else {
+      h1.textContent = "Comandi Terminale";
+    }
     left.appendChild(h1);
     topbar.appendChild(left);
 
@@ -201,7 +226,7 @@
       card.className = "os-card";
       card.innerHTML =
         '<div class="os-icon">' +
-        OS_META[osKey].icon +
+        osIconSvg(osKey, 32) +
         "</div>" +
         "<h3>" +
         OS_META[osKey].label +
@@ -362,9 +387,8 @@
     header.className = "entry-view-header";
     header.innerHTML =
       "<div><span class=\"badge\">" +
-      OS_META[entry.os].icon +
-      " " +
-      OS_META[entry.os].label +
+      osIconSvg(entry.os, 14) +
+      "<span>" + OS_META[entry.os].label + "</span>" +
       "</span><h2>" +
       escapeHtml(entry.name || "(senza nome)") +
       "</h2></div>";
@@ -478,7 +502,7 @@
       var btn = document.createElement("button");
       btn.type = "button";
       btn.className = osKey === selectedOs ? "active" : "";
-      btn.innerHTML = OS_META[osKey].icon + " " + OS_META[osKey].label;
+      btn.innerHTML = osIconSvg(osKey, 16) + "<span>" + OS_META[osKey].label + "</span>";
       btn.addEventListener("click", function () {
         selectedOs = osKey;
         Array.prototype.forEach.call(toggle.children, function (c, idx) {
