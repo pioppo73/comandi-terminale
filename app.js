@@ -1,7 +1,18 @@
 (function () {
   "use strict";
 
-  var STORAGE_KEY = "terminal-commands:data";
+  // ---------- configurazione ----------
+  var LEGACY_KEY = "terminal-commands:data";
+  var VAULT_KEY = "terminal-commands:vault";
+  var TOKEN_KEY = "terminal-commands:gh-token";
+
+  var GH_OWNER = "pioppo73";
+  var GH_REPO = "comandi-terminale";
+  var GH_BRANCH = "main";
+  var GH_FILE_PATH = "data.json";
+
+  var PBKDF2_ITERATIONS = 150000;
+  var AUTO_LOCK_MS = 5 * 60 * 1000;
 
   var OS_META = {
     mac: {
@@ -35,6 +46,19 @@
       viewBox +
       '" fill="#fff" fill-rule="evenodd" aria-hidden="true">' +
       inner +
+      "</svg>"
+    );
+  }
+
+  function terminalLogoSvg(size) {
+    return (
+      '<svg width="' +
+      size +
+      '" height="' +
+      size +
+      '" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<polyline points="4,6 10,12 4,18"/>' +
+      '<line x1="12" y1="18" x2="20" y2="18"/>' +
       "</svg>"
     );
   }
@@ -88,32 +112,200 @@
     );
   }
 
+  // ---------- crittografia (Web Crypto API) ----------
+  function randomBytes(n) {
+    return crypto.getRandomValues(new Uint8Array(n));
+  }
+
+  function bytesToBase64(bytes) {
+    var binary = "";
+    var chunk = 0x8000;
+    for (var i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  function base64ToBytes(b64) {
+    var binary = atob(b64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  function deriveKey(password, saltBytes) {
+    var enc = new TextEncoder();
+    return crypto.subtle
+      .importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"])
+      .then(function (keyMaterial) {
+        return crypto.subtle.deriveKey(
+          { name: "PBKDF2", salt: saltBytes, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+          keyMaterial,
+          { name: "AES-GCM", length: 256 },
+          false,
+          ["encrypt", "decrypt"]
+        );
+      });
+  }
+
+  function encryptPayload(password, obj) {
+    var salt = randomBytes(16);
+    var iv = randomBytes(12);
+    return deriveKey(password, salt).then(function (key) {
+      var enc = new TextEncoder();
+      var plaintext = enc.encode(JSON.stringify(obj));
+      return crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, plaintext).then(function (buf) {
+        return {
+          v: 1,
+          salt: bytesToBase64(salt),
+          iv: bytesToBase64(iv),
+          data: bytesToBase64(new Uint8Array(buf)),
+          updatedAt: Date.now(),
+        };
+      });
+    });
+  }
+
+  function decryptPayload(password, envelope) {
+    var salt = base64ToBytes(envelope.salt);
+    var iv = base64ToBytes(envelope.iv);
+    return deriveKey(password, salt).then(function (key) {
+      var ciphertext = base64ToBytes(envelope.data);
+      return crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, ciphertext).then(function (buf) {
+        var dec = new TextDecoder();
+        return JSON.parse(dec.decode(buf));
+      });
+    });
+  }
+
+  // ---------- sincronizzazione GitHub ----------
+  function ghToken() {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  }
+
+  function setGhToken(token) {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  }
+
+  function fetchRemoteEnvelope() {
+    var url =
+      "https://raw.githubusercontent.com/" +
+      GH_OWNER +
+      "/" +
+      GH_REPO +
+      "/" +
+      GH_BRANCH +
+      "/" +
+      GH_FILE_PATH +
+      "?t=" +
+      Date.now();
+    return fetch(url, { cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) return null;
+        return res.json();
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
+  function pushRemoteEnvelope(envelope) {
+    var token = ghToken();
+    if (!token) return Promise.resolve({ ok: false, reason: "no-token" });
+    var apiUrl = "https://api.github.com/repos/" + GH_OWNER + "/" + GH_REPO + "/contents/" + GH_FILE_PATH;
+    return fetch(apiUrl, {
+      headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" },
+    })
+      .then(function (res) {
+        return res.ok ? res.json() : null;
+      })
+      .then(function (existing) {
+        var contentStr = JSON.stringify(envelope, null, 2);
+        var body = {
+          message: "Aggiorna comandi (" + new Date().toISOString() + ")",
+          content: bytesToBase64(new TextEncoder().encode(contentStr)),
+          branch: GH_BRANCH,
+        };
+        if (existing && existing.sha) body.sha = existing.sha;
+        return fetch(apiUrl, {
+          method: "PUT",
+          headers: {
+            Authorization: "Bearer " + token,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+      })
+      .then(function (res) {
+        return { ok: res.ok, status: res.status };
+      })
+      .catch(function () {
+        return { ok: false, reason: "network" };
+      });
+  }
+
+  // ---------- stato ----------
   var state = {
+    screen: "unlock", // 'unlock' | 'vault'
+    error: null,
     view: "home", // 'home' | 'section'
     currentOS: null,
     search: "",
     selectedId: null,
     formMode: null, // null | 'new' | 'edit'
-    pendingImport: null, // parsed array waiting for merge/replace confirmation
+    pendingImport: null,
+    settingsOpen: false,
   };
+
+  var commands = [];
+  var vaultPassword = null;
+  var autoLockTimer = null;
 
   var app = document.getElementById("app");
   var importInput = document.getElementById("import-input");
 
-  // ---------- storage ----------
-  function loadData() {
+  // ---------- storage locale (cifrato) ----------
+  function loadLocalEnvelope() {
     try {
-      var raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return [];
-      var parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
+      var raw = localStorage.getItem(VAULT_KEY);
+      return raw ? JSON.parse(raw) : null;
     } catch (e) {
-      return [];
+      return null;
     }
   }
 
+  function loadLegacyPlain() {
+    try {
+      var raw = localStorage.getItem(LEGACY_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function loadData() {
+    return commands;
+  }
+
+  function persistLocal() {
+    return encryptPayload(vaultPassword, commands).then(function (envelope) {
+      localStorage.setItem(VAULT_KEY, JSON.stringify(envelope));
+      return envelope;
+    });
+  }
+
   function saveData(items) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    commands = items;
+    return persistLocal().then(function (envelope) {
+      if (ghToken()) {
+        pushRemoteEnvelope(envelope).then(function (result) {
+          if (!result.ok) showToast("Sincronizzazione non riuscita");
+        });
+      }
+      return envelope;
+    });
   }
 
   function uid() {
@@ -123,9 +315,7 @@
   // ---------- helpers ----------
   function escapeHtml(str) {
     return String(str == null ? "" : str).replace(/[&<>"']/g, function (c) {
-      return (
-        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-      );
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
 
@@ -177,8 +367,124 @@
     document.body.removeChild(ta);
   }
 
+  // ---------- blocco automatico ----------
+  function resetAutoLock() {
+    if (autoLockTimer) clearTimeout(autoLockTimer);
+    if (state.screen === "vault") {
+      autoLockTimer = setTimeout(lockVault, AUTO_LOCK_MS);
+    }
+  }
+  ["mousemove", "keydown", "click"].forEach(function (evt) {
+    window.addEventListener(evt, resetAutoLock, { passive: true });
+  });
+
+  function lockVault() {
+    vaultPassword = null;
+    commands = [];
+    state.screen = "unlock";
+    state.error = null;
+    state.view = "home";
+    state.currentOS = null;
+    state.selectedId = null;
+    state.formMode = null;
+    state.settingsOpen = false;
+    render();
+  }
+
+  function enterVault() {
+    state.screen = "vault";
+    state.error = null;
+    render();
+    resetAutoLock();
+  }
+
+  // ---------- sblocco ----------
+  function attemptUnlock(pw) {
+    state.error = null;
+    var localEnv = loadLocalEnvelope();
+    fetchRemoteEnvelope().then(function (remoteEnv) {
+      var candidates = [];
+      if (localEnv) candidates.push({ source: "local", env: localEnv });
+      if (remoteEnv) candidates.push({ source: "remote", env: remoteEnv });
+
+      if (candidates.length === 0) {
+        var legacy = loadLegacyPlain();
+        vaultPassword = pw;
+        commands = Array.isArray(legacy) ? legacy : [];
+        persistLocal().then(function (envelope) {
+          localStorage.removeItem(LEGACY_KEY);
+          if (ghToken()) pushRemoteEnvelope(envelope);
+          enterVault();
+        });
+        return;
+      }
+
+      candidates.sort(function (a, b) {
+        return (b.env.updatedAt || 0) - (a.env.updatedAt || 0);
+      });
+      var winner = candidates[0];
+
+      decryptPayload(pw, winner.env)
+        .then(function (decrypted) {
+          vaultPassword = pw;
+          commands = Array.isArray(decrypted) ? decrypted : [];
+
+          if (winner.source === "remote") {
+            localStorage.setItem(VAULT_KEY, JSON.stringify(winner.env));
+          } else if (!remoteEnv || (remoteEnv.updatedAt || 0) < winner.env.updatedAt) {
+            if (ghToken()) pushRemoteEnvelope(winner.env);
+          }
+
+          enterVault();
+        })
+        .catch(function () {
+          state.error = "Password errata.";
+          render();
+        });
+    });
+  }
+
+  function renderUnlock() {
+    app.innerHTML = "";
+    var screenDiv = document.createElement("div");
+    screenDiv.className = "auth-screen";
+    screenDiv.innerHTML =
+      '<div class="auth-card">' +
+      '<div class="brand-badge">' +
+      terminalLogoSvg(30) +
+      "</div>" +
+      '<h1 class="brand-title">Comandi Terminale</h1>' +
+      '<p class="brand-subtitle">Vault protetto</p>' +
+      '<p class="muted">Inserisci la password per sbloccare il tuo archivio di comandi.</p>' +
+      '<form id="unlock-form">' +
+      '<label for="pw">Password</label>' +
+      '<input type="password" id="pw" autocomplete="current-password" required />' +
+      (state.error ? '<p class="error">' + escapeHtml(state.error) + "</p>" : "") +
+      '<button type="submit" class="primary">Sblocca</button>' +
+      "</form>" +
+      "</div>";
+    app.appendChild(screenDiv);
+
+    var form = document.getElementById("unlock-form");
+    var pwInput = document.getElementById("pw");
+    pwInput.focus();
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var pw = pwInput.value;
+      var btn = form.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      btn.textContent = "Sblocco in corso...";
+      attemptUnlock(pw);
+    });
+  }
+
   // ---------- render ----------
   function render() {
+    if (state.screen !== "vault") {
+      renderUnlock();
+      return;
+    }
+
     app.innerHTML = "";
     var layout = document.createElement("div");
     layout.className = "vault-layout";
@@ -199,6 +505,9 @@
 
     if (state.pendingImport) {
       app.appendChild(renderImportModal());
+    }
+    if (state.settingsOpen) {
+      app.appendChild(renderSettingsModal());
     }
   }
 
@@ -237,6 +546,15 @@
     var actions = document.createElement("div");
     actions.className = "topbar-actions";
 
+    var syncBtn = document.createElement("button");
+    syncBtn.className = "ghost";
+    syncBtn.textContent = "Sincronizzazione";
+    syncBtn.addEventListener("click", function () {
+      state.settingsOpen = true;
+      render();
+    });
+    actions.appendChild(syncBtn);
+
     var exportBtn = document.createElement("button");
     exportBtn.className = "ghost";
     exportBtn.textContent = "Esporta";
@@ -250,6 +568,13 @@
       importInput.click();
     });
     actions.appendChild(importBtn);
+
+    var lockBtn = document.createElement("button");
+    lockBtn.className = "back-btn";
+    lockBtn.title = "Blocca il vault";
+    lockBtn.textContent = "🔒";
+    lockBtn.addEventListener("click", lockVault);
+    actions.appendChild(lockBtn);
 
     topbar.appendChild(actions);
     return topbar;
@@ -368,8 +693,7 @@
     } else {
       entries.forEach(function (entry) {
         var li = document.createElement("li");
-        li.className =
-          "entry-item" + (entry.id === state.selectedId && !state.formMode ? " selected" : "");
+        li.className = "entry-item" + (entry.id === state.selectedId && !state.formMode ? " selected" : "");
         li.innerHTML =
           '<div class="entry-title">' +
           escapeHtml(entry.name || "(senza nome)") +
@@ -442,7 +766,9 @@
     header.innerHTML =
       "<div><span class=\"badge\">" +
       osIconSvg(entry.os, 14) +
-      "<span>" + OS_META[entry.os].label + "</span>" +
+      "<span>" +
+      OS_META[entry.os].label +
+      "</span>" +
       "</span><h2>" +
       escapeHtml(entry.name || "(senza nome)") +
       "</h2></div>";
@@ -468,10 +794,11 @@
         var items = loadData().filter(function (i) {
           return i.id !== entry.id;
         });
-        saveData(items);
-        state.selectedId = null;
-        showToast("Comando eliminato");
-        render();
+        saveData(items).then(function () {
+          state.selectedId = null;
+          showToast("Comando eliminato");
+          render();
+        });
       }
     });
     actions.appendChild(delBtn);
@@ -580,6 +907,7 @@
       if (!name || !command) return;
 
       var items = loadData();
+      var isEdit = !!entry;
 
       if (entry) {
         items = items.map(function (i) {
@@ -596,7 +924,6 @@
           }
           return i;
         });
-        showToast("Comando aggiornato");
       } else {
         var newEntry = {
           id: uid(),
@@ -609,15 +936,16 @@
         };
         items.push(newEntry);
         state.selectedId = newEntry.id;
-        showToast("Comando salvato");
       }
 
-      saveData(items);
-      state.formMode = null;
-      if (selectedOs !== state.currentOS) {
-        state.currentOS = selectedOs;
-      }
-      render();
+      saveData(items).then(function () {
+        showToast(isEdit ? "Comando aggiornato" : "Comando salvato");
+        state.formMode = null;
+        if (selectedOs !== state.currentOS) {
+          state.currentOS = selectedOs;
+        }
+        render();
+      });
     });
 
     return form;
@@ -711,17 +1039,19 @@
           return existingIds.indexOf(i.id) !== -1 ? Object.assign({}, i, { id: uid() }) : i;
         })
       );
-      saveData(merged);
-      state.pendingImport = null;
-      showToast("Comandi uniti all'archivio");
-      render();
+      saveData(merged).then(function () {
+        state.pendingImport = null;
+        showToast("Comandi uniti all'archivio");
+        render();
+      });
     });
 
     modal.querySelector("#import-replace").addEventListener("click", function () {
-      saveData(state.pendingImport);
-      state.pendingImport = null;
-      showToast("Archivio sostituito");
-      render();
+      saveData(state.pendingImport).then(function () {
+        state.pendingImport = null;
+        showToast("Archivio sostituito");
+        render();
+      });
     });
 
     modal.querySelector("#import-cancel").addEventListener("click", function () {
@@ -733,5 +1063,97 @@
     return overlay;
   }
 
-  loadCustomIcons().then(render);
+  // ---------- impostazioni di sincronizzazione ----------
+  function renderSettingsModal() {
+    var overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    var modal = document.createElement("div");
+    modal.className = "modal";
+
+    var hasToken = !!ghToken();
+
+    modal.innerHTML =
+      "<h3>Sincronizzazione GitHub</h3>" +
+      '<p class="muted small">I comandi sono cifrati con la tua password prima di essere salvati nel repository GitHub: restano illeggibili anche perché il repository è pubblico. La lettura funziona già su qualsiasi dispositivo. Per salvare le modifiche fatte da QUESTO dispositivo serve invece un token GitHub personale, da configurare una sola volta.</p>' +
+      '<label for="gh-token">Token GitHub</label>' +
+      '<input type="password" id="gh-token" placeholder="' +
+      (hasToken ? "già configurato su questo dispositivo" : "ghp_...") +
+      '" autocomplete="off" />' +
+      '<p class="muted small">Crealo su <span class="mono">github.com/settings/personal-access-tokens/new</span> → "Only select repositories" → <span class="mono">' +
+      GH_REPO +
+      '</span> → permesso <span class="mono">Contents: Read and write</span>.</p>' +
+      '<div class="form-actions">' +
+      '<button type="button" class="primary" id="save-token">Salva token</button>' +
+      (hasToken ? '<button type="button" class="danger" id="remove-token">Rimuovi</button>' : "") +
+      "</div>" +
+      '<div class="form-actions">' +
+      '<button type="button" class="ghost" id="sync-now">Sincronizza ora</button>' +
+      '<button type="button" class="ghost" id="close-settings">Chiudi</button>' +
+      "</div>";
+
+    modal.querySelector("#save-token").addEventListener("click", function () {
+      var val = modal.querySelector("#gh-token").value.trim();
+      if (!val) return;
+      setGhToken(val);
+      showToast("Token salvato su questo dispositivo");
+      state.settingsOpen = false;
+      render();
+    });
+
+    var removeBtn = modal.querySelector("#remove-token");
+    if (removeBtn) {
+      removeBtn.addEventListener("click", function () {
+        setGhToken("");
+        showToast("Token rimosso");
+        state.settingsOpen = false;
+        render();
+      });
+    }
+
+    modal.querySelector("#close-settings").addEventListener("click", function () {
+      state.settingsOpen = false;
+      render();
+    });
+
+    modal.querySelector("#sync-now").addEventListener("click", function () {
+      showToast("Sincronizzazione in corso...");
+      fetchRemoteEnvelope().then(function (remoteEnv) {
+        if (!remoteEnv) {
+          showToast("Nessun dato remoto trovato");
+          return;
+        }
+        decryptPayload(vaultPassword, remoteEnv)
+          .then(function (remoteCommands) {
+            var localEnv = loadLocalEnvelope();
+            var localUpdatedAt = localEnv ? localEnv.updatedAt || 0 : 0;
+            if ((remoteEnv.updatedAt || 0) > localUpdatedAt) {
+              commands = Array.isArray(remoteCommands) ? remoteCommands : [];
+              localStorage.setItem(VAULT_KEY, JSON.stringify(remoteEnv));
+              state.settingsOpen = false;
+              render();
+              showToast("Dati aggiornati dal cloud");
+            } else if (ghToken()) {
+              persistLocal().then(function (envelope) {
+                pushRemoteEnvelope(envelope).then(function (result) {
+                  showToast(result.ok ? "Sincronizzato" : "Sincronizzazione non riuscita");
+                });
+              });
+            } else {
+              showToast("Sei già aggiornato");
+            }
+          })
+          .catch(function () {
+            showToast("Impossibile decifrare i dati remoti");
+          });
+      });
+    });
+
+    overlay.appendChild(modal);
+    return overlay;
+  }
+
+  // ---------- avvio ----------
+  loadCustomIcons();
+  render();
 })();
