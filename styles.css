@@ -173,6 +173,47 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(155, 123, 255, 0.25);
 }
 
+.notes-editable {
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  padding: 0.7em 1.1em;
+  font-size: 1em;
+  color: inherit;
+  background-color: rgba(255, 255, 255, 0.05);
+  width: 100%;
+  min-height: 6em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.notes-editable:focus {
+  outline: none;
+  border-color: var(--accent-1);
+  box-shadow: 0 0 0 3px rgba(155, 123, 255, 0.25);
+}
+
+.notes-editable:empty::before {
+  content: attr(data-placeholder);
+  color: rgba(243, 240, 255, 0.35);
+  font-family: "SF Pro Display", Inter, Avenir, Helvetica, Arial, sans-serif;
+}
+
+.notes-editable a {
+  color: var(--accent-1);
+  text-decoration: underline;
+}
+
+.notes-editable table {
+  border-collapse: collapse;
+  margin: 0.3em 0;
+}
+
+.notes-editable table td,
+.notes-editable table th {
+  border: 1px solid var(--border);
+  padding: 0.3em 0.6em;
+}
+
 button {
   border-radius: 999px;
   border: 1px solid transparent;
@@ -500,7 +541,6 @@ button:disabled {
   white-space: pre-wrap;
   align-items: flex-start;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  tab-size: 4;
 }
 
 .field-value.notes a {
@@ -510,6 +550,19 @@ button:disabled {
 
 .field-value.notes a:hover {
   color: #fff;
+}
+
+.notes-table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  width: 100%;
+}
+
+.notes-table td {
+  border: 1px solid var(--border);
+  padding: 0.35em 0.7em;
+  vertical-align: top;
+  white-space: pre-wrap;
 }
 
 .command-value {

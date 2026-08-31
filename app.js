@@ -319,12 +319,168 @@
     });
   }
 
-  // Rileva URL http/https in un testo gia' HTML-escaped e li trasforma in
-  // link cliccabili, senza toccare il resto del testo (spazi/tab/a-capo
-  // restano intatti grazie a white-space:pre-wrap nel CSS).
+  // Rileva link in un testo gia' HTML-escaped e li trasforma in link
+  // cliccabili: sia il formato Markdown [testo](url) con etichetta
+  // personalizzata, sia gli URL scritti per esteso (http/https).
   function linkifyHtml(escapedText) {
-    return escapedText.replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]}]/g, function (url) {
-      return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>";
+    var pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+[^\s<.,;:!?)\]}])/g;
+    return escapedText.replace(pattern, function (match, mdLabel, mdUrl, bareUrl) {
+      var href = mdUrl || bareUrl;
+      var label = mdLabel || bareUrl;
+      return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + "</a>";
+    });
+  }
+
+  // Le note possono contenere righe con tabulazioni (dati incollati da una
+  // tabella): quelle righe vengono renderizzate come una vera tabella HTML,
+  // che si allinea correttamente indipendentemente dalla lunghezza del
+  // testo in ciascuna colonna (a differenza del semplice allineamento a
+  // "tab stop" del CSS). Le righe senza tabulazioni restano testo normale.
+  function renderNotesHtml(rawText) {
+    var lines = String(rawText || "").split("\n");
+    var htmlParts = [];
+    var i = 0;
+    while (i < lines.length) {
+      if (lines[i].indexOf("\t") !== -1) {
+        var tableLines = [];
+        while (i < lines.length && lines[i].indexOf("\t") !== -1) {
+          tableLines.push(lines[i]);
+          i++;
+        }
+        var rows = tableLines.map(function (line) {
+          var cells = line.split("\t").map(function (cell) {
+            return "<td>" + linkifyHtml(escapeHtml(cell)) + "</td>";
+          });
+          return "<tr>" + cells.join("") + "</tr>";
+        });
+        htmlParts.push('<table class="notes-table">' + rows.join("") + "</table>");
+      } else {
+        var textLines = [];
+        while (i < lines.length && lines[i].indexOf("\t") === -1) {
+          textLines.push(lines[i]);
+          i++;
+        }
+        htmlParts.push(linkifyHtml(escapeHtml(textLines.join("\n"))));
+      }
+    }
+    return htmlParts.join("");
+  }
+
+  // ---------- note con incolla ricco (HTML da Word/Google Docs/pagine web) ----------
+  // Quando si incolla testo formattato che contiene gia' un link (es. la
+  // parola "qui" collegata a un URL in un documento Word), il browser mette
+  // a disposizione anche una versione HTML degli appunti: la intercettiamo
+  // e la sanifichiamo per mantenere link e tabelle, eliminando pero' tutto
+  // cio' che potrebbe essere pericoloso (script, gestori di eventi, iframe,
+  // URL non http/https, ecc.).
+  var NOTES_ALLOWED_TAGS = {
+    A: 1,
+    B: 1,
+    STRONG: 1,
+    I: 1,
+    EM: 1,
+    U: 1,
+    BR: 1,
+    P: 1,
+    DIV: 1,
+    SPAN: 1,
+    UL: 1,
+    OL: 1,
+    LI: 1,
+    TABLE: 1,
+    THEAD: 1,
+    TBODY: 1,
+    TR: 1,
+    TD: 1,
+    TH: 1,
+    CODE: 1,
+    PRE: 1,
+  };
+  var NOTES_STRIP_WITH_CONTENT = {
+    SCRIPT: 1,
+    STYLE: 1,
+    IFRAME: 1,
+    OBJECT: 1,
+    EMBED: 1,
+    HEAD: 1,
+    TITLE: 1,
+    META: 1,
+    LINK: 1,
+    NOSCRIPT: 1,
+  };
+
+  function sanitizeNotesNode(node) {
+    Array.prototype.slice.call(node.childNodes).forEach(function (child) {
+      if (child.nodeType === 3) return; // testo: lasciato intatto
+      if (child.nodeType !== 1) {
+        node.removeChild(child);
+        return;
+      }
+      var tag = child.tagName;
+      if (NOTES_STRIP_WITH_CONTENT[tag]) {
+        node.removeChild(child);
+        return;
+      }
+
+      var hrefValue = tag === "A" ? child.getAttribute("href") : null;
+      Array.prototype.slice.call(child.attributes).forEach(function (attr) {
+        child.removeAttribute(attr.name);
+      });
+
+      sanitizeNotesNode(child);
+
+      if (!NOTES_ALLOWED_TAGS[tag]) {
+        while (child.firstChild) node.insertBefore(child.firstChild, child);
+        node.removeChild(child);
+        return;
+      }
+
+      if (tag === "A") {
+        if (hrefValue && /^https?:\/\//i.test(hrefValue)) {
+          child.setAttribute("href", hrefValue);
+          child.setAttribute("target", "_blank");
+          child.setAttribute("rel", "noopener noreferrer");
+        } else {
+          while (child.firstChild) node.insertBefore(child.firstChild, child);
+          node.removeChild(child);
+        }
+      }
+    });
+  }
+
+  function sanitizeNotesHtml(html) {
+    var doc = new DOMParser().parseFromString("<div>" + html + "</div>", "text/html");
+    var root = doc.body.firstChild;
+    sanitizeNotesNode(root);
+    return root.innerHTML;
+  }
+
+  function isInsideAnchor(node) {
+    var p = node.parentNode;
+    while (p) {
+      if (p.nodeType === 1 && p.tagName === "A") return true;
+      p = p.parentNode;
+    }
+    return false;
+  }
+
+  // Rende cliccabili URL/link Markdown scritti come testo semplice anche
+  // dentro al contenuto ricco (es. un URL digitato a mano vicino a un link
+  // gia' incollato da Word), senza toccare i link gia' presenti.
+  function autoLinkTextNodes(root) {
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var textNodes = [];
+    var n;
+    while ((n = walker.nextNode())) textNodes.push(n);
+    textNodes.forEach(function (node) {
+      if (isInsideAnchor(node)) return;
+      var raw = node.nodeValue;
+      if (raw.indexOf("http://") === -1 && raw.indexOf("https://") === -1) return;
+      var escaped = escapeHtml(raw);
+      var linked = linkifyHtml(escaped);
+      if (linked === escaped) return;
+      var frag = document.createRange().createContextualFragment(linked);
+      node.parentNode.replaceChild(frag, node);
     });
   }
 
@@ -935,7 +1091,8 @@
       var notesValue = document.createElement("div");
       notesValue.className = "field-value notes";
       var notesSpan = document.createElement("span");
-      notesSpan.innerHTML = linkifyHtml(escapeHtml(entry.notes));
+      notesSpan.innerHTML =
+        entry.notesFormat === "html" ? sanitizeNotesHtml(entry.notes) : renderNotesHtml(entry.notes);
       notesValue.appendChild(notesSpan);
       notesRow.appendChild(notesValue);
       view.appendChild(notesRow);
@@ -969,7 +1126,8 @@
       "<label>Comando</label>" +
       '<textarea name="command" class="mono" rows="3" placeholder="Es. ls -la" required></textarea>' +
       "<label>Note</label>" +
-      '<textarea name="notes" class="mono" rows="4" placeholder="Note opzionali... (i link vengono resi cliccabili automaticamente)"></textarea>' +
+      '<div class="notes-editable mono" id="notes-editable" contenteditable="true" ' +
+      'data-placeholder="Note opzionali... Incolla pure testo con link o tabelle: restano attivi. Gli URL scritti a mano diventano cliccabili automaticamente, oppure usa [testo](url) per un\'etichetta personalizzata."></div>' +
       '<div class="form-actions">' +
       '<button type="submit" class="primary">Salva</button>' +
       '<button type="button" class="ghost" id="cancel-form">Annulla</button>' +
@@ -977,7 +1135,23 @@
 
     form.querySelector('[name="name"]').value = entry ? entry.name || "" : "";
     form.querySelector('[name="command"]').value = entry ? entry.command || "" : "";
-    form.querySelector('[name="notes"]').value = entry ? entry.notes || "" : "";
+
+    var notesEditable = form.querySelector("#notes-editable");
+    if (entry && entry.notes) {
+      if (entry.notesFormat === "html") {
+        notesEditable.innerHTML = sanitizeNotesHtml(entry.notes);
+      } else {
+        notesEditable.textContent = entry.notes;
+      }
+    }
+    notesEditable.addEventListener("paste", function (e) {
+      e.preventDefault();
+      var cd = e.clipboardData || window.clipboardData;
+      var html = cd.getData("text/html");
+      var text = cd.getData("text/plain");
+      var toInsert = html ? sanitizeNotesHtml(html) : renderNotesHtml(text || "");
+      document.execCommand("insertHTML", false, toInsert);
+    });
 
     var toggle = form.querySelector("#os-toggle");
     var selectedOs = osValue;
@@ -1004,7 +1178,10 @@
       e.preventDefault();
       var name = form.querySelector('[name="name"]').value.trim();
       var command = form.querySelector('[name="command"]').value.trim();
-      var notes = form.querySelector('[name="notes"]').value.trim();
+
+      autoLinkTextNodes(notesEditable);
+      var notesIsEmpty = notesEditable.textContent.trim() === "";
+      var notes = notesIsEmpty ? "" : sanitizeNotesHtml(notesEditable.innerHTML);
 
       if (!name || !command) return;
 
@@ -1019,6 +1196,7 @@
               name: name,
               command: command,
               notes: notes,
+              notesFormat: notesIsEmpty ? undefined : "html",
               os: selectedOs,
               createdAt: i.createdAt,
               updatedAt: Date.now(),
@@ -1032,6 +1210,7 @@
           name: name,
           command: command,
           notes: notes,
+          notesFormat: notesIsEmpty ? undefined : "html",
           os: selectedOs,
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -1079,11 +1258,13 @@
       if (!item || typeof item !== "object") continue;
       if (!item.command) continue;
       var os = OS_META[item.os] ? item.os : "mac";
+      var notesFormat = item.notesFormat === "html" ? "html" : undefined;
       out.push({
         id: item.id && typeof item.id === "string" ? item.id : uid(),
         name: item.name || "",
         command: item.command || "",
-        notes: item.notes || "",
+        notes: notesFormat === "html" ? sanitizeNotesHtml(item.notes || "") : item.notes || "",
+        notesFormat: notesFormat,
         os: os,
         createdAt: item.createdAt || Date.now(),
         updatedAt: item.updatedAt || Date.now(),
